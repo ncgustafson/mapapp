@@ -211,22 +211,20 @@
   font-size: 13px;
 }
 
-.legend-row {
+.legend-scale {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.legend-bar {
-  height: 10px;
   border-radius: 4px;
+  overflow: hidden;
 }
 
-.legend-labels {
-  display: flex;
-  justify-content: space-between;
+.legend-swatch {
+  flex: 1;
+  text-align: center;
+  padding: 4px 0;
   font-size: 11px;
-  color: #9aa0a6;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.75);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 
 .weather-controls button {

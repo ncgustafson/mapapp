@@ -1,9 +1,12 @@
 import * as Cesium from 'cesium'
+import type { Landmark } from './landmarks'
 
 export type TemperatureSample = {
   lat: number
   lon: number
   tempF: number
+  name: string
+  kind: 'city' | 'peak'
 }
 
 async function fetchPointTemperatureF(lat: number, lon: number): Promise<number | null> {
@@ -28,48 +31,33 @@ async function fetchPointTemperatureF(lat: number, lon: number): Promise<number 
   }
 }
 
-function sampleGridPoints(rectangle: Cesium.Rectangle, cols: number, rows: number) {
-  const west = Cesium.Math.toDegrees(rectangle.west)
-  const east = Cesium.Math.toDegrees(rectangle.east)
-  const south = Cesium.Math.toDegrees(rectangle.south)
-  const north = Cesium.Math.toDegrees(rectangle.north)
-
-  const points: { lat: number; lon: number }[] = []
-  for (let row = 0; row < rows; row++) {
-    const lat = south + ((row + 0.5) / rows) * (north - south)
-    for (let col = 0; col < cols; col++) {
-      const lon = west + ((col + 0.5) / cols) * (east - west)
-      points.push({ lat, lon })
-    }
-  }
-  return points
-}
-
-export async function fetchTemperatureSamples(
-  rectangle: Cesium.Rectangle,
-  cols: number,
-  rows: number,
-): Promise<TemperatureSample[]> {
-  const points = sampleGridPoints(rectangle, cols, rows)
+export async function fetchTemperatureForLandmarks(landmarks: Landmark[]): Promise<TemperatureSample[]> {
   const results = await Promise.all(
-    points.map(async (p) => {
-      const tempF = await fetchPointTemperatureF(p.lat, p.lon)
-      return tempF === null ? null : { ...p, tempF }
+    landmarks.map(async (landmark) => {
+      const tempF = await fetchPointTemperatureF(landmark.lat, landmark.lon)
+      if (tempF === null) return null
+      return { lat: landmark.lat, lon: landmark.lon, tempF, name: landmark.name, kind: landmark.kind }
     }),
   )
   return results.filter((r): r is TemperatureSample => r !== null)
 }
 
+// Mirrors the classic NWS graphical-forecast temperature scale
+// (magenta/purple cold through blue, green, yellow, to red hot),
+// anchored at clean 10-degree marks like the reference product.
 const COLOR_STOPS: { temp: number; color: [number, number, number] }[] = [
-  { temp: -10, color: [97, 33, 143] },
-  { temp: 0, color: [43, 79, 173] },
-  { temp: 20, color: [50, 143, 214] },
-  { temp: 32, color: [100, 197, 214] },
-  { temp: 45, color: [128, 204, 138] },
-  { temp: 60, color: [230, 220, 90] },
-  { temp: 75, color: [240, 160, 45] },
-  { temp: 90, color: [214, 60, 40] },
-  { temp: 105, color: [150, 30, 60] },
+  { temp: -10, color: [70, 20, 90] },
+  { temp: 0, color: [110, 40, 140] },
+  { temp: 10, color: [200, 90, 190] },
+  { temp: 20, color: [140, 70, 200] },
+  { temp: 30, color: [60, 100, 220] },
+  { temp: 40, color: [70, 190, 230] },
+  { temp: 50, color: [80, 190, 150] },
+  { temp: 60, color: [110, 190, 70] },
+  { temp: 70, color: [230, 210, 60] },
+  { temp: 80, color: [235, 140, 40] },
+  { temp: 90, color: [210, 50, 40] },
+  { temp: 100, color: [150, 20, 30] },
 ]
 
 function colorForTempF(tempF: number): [number, number, number] {
@@ -89,20 +77,13 @@ function colorForTempF(tempF: number): [number, number, number] {
   return COLOR_STOPS[COLOR_STOPS.length - 1].color
 }
 
-export function temperatureLegendCss(): string {
-  const minT = COLOR_STOPS[0].temp
-  const maxT = COLOR_STOPS[COLOR_STOPS.length - 1].temp
-  const stops = COLOR_STOPS.map((s) => {
-    const pct = ((s.temp - minT) / (maxT - minT)) * 100
-    return `rgb(${s.color[0]}, ${s.color[1]}, ${s.color[2]}) ${pct}%`
-  })
-  return `linear-gradient(to right, ${stops.join(', ')})`
+export function rgbStringForTempF(tempF: number): string {
+  const [r, g, b] = colorForTempF(tempF)
+  return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`
 }
 
-export const TEMPERATURE_LEGEND_RANGE = {
-  min: COLOR_STOPS[0].temp,
-  max: COLOR_STOPS[COLOR_STOPS.length - 1].temp,
-}
+/** The 10-90 marks shown on the legend, matching the reference scale. */
+export const TEMPERATURE_LEGEND_MARKS = [10, 20, 30, 40, 50, 60, 70, 80, 90]
 
 function renderHeatmapCanvas(
   samples: TemperatureSample[],
@@ -127,21 +108,40 @@ function renderHeatmapCanvas(
   const gridH = Math.min(height, 96)
   const grid: [number, number, number, number][][] = []
 
+  // Fade alpha out near the tile's edges so the overlay blends into the
+  // surrounding terrain instead of ending in a hard rectangular cutoff.
+  const edgeMargin = 0.12
+  function smoothstep(edge0: number, edge1: number, x: number) {
+    const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)))
+    return t * t * (3 - 2 * t)
+  }
+  function edgeFade(u: number, v: number) {
+    return (
+      smoothstep(0, edgeMargin, u) *
+      smoothstep(0, edgeMargin, 1 - u) *
+      smoothstep(0, edgeMargin, v) *
+      smoothstep(0, edgeMargin, 1 - v)
+    )
+  }
+
   for (let gy = 0; gy < gridH; gy++) {
-    const lat = north - (gy / (gridH - 1)) * (north - south)
+    const v = gy / (gridH - 1)
+    const lat = north - v * (north - south)
     const row: [number, number, number, number][] = []
     for (let gx = 0; gx < gridW; gx++) {
-      const lon = west + (gx / (gridW - 1)) * (east - west)
+      const u = gx / (gridW - 1)
+      const lon = west + u * (east - west)
       let weightedTemp = 0
       let weightSum = 0
       for (const s of samples) {
-        const d2 = (s.lat - lat) ** 2 + (s.lon - lon) ** 2
-        const w = 1 / Math.max(d2, 1e-6)
+        const dist = Math.hypot(s.lat - lat, s.lon - lon)
+        const w = 1 / Math.max(dist ** 3, 1e-9)
         weightedTemp += w * s.tempF
         weightSum += w
       }
       const [r, g, b] = colorForTempF(weightedTemp / weightSum)
-      row.push([r, g, b, 200])
+      const alpha = Math.round(210 * edgeFade(u, v))
+      row.push([r, g, b, alpha])
     }
     grid.push(row)
   }
