@@ -55,6 +55,11 @@
   padding: 16px;
   overflow-y: auto;
   flex-shrink: 0;
+  scrollbar-width: none; /* Firefox */
+}
+
+.drawer::-webkit-scrollbar {
+  display: none; /* Chrome, Safari */
 }
 
 .resize-handle {
@@ -282,31 +287,34 @@
 
 .weather-tabs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
   margin-bottom: 14px;
 }
 
 .weather-tab {
-  padding: 6px 10px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  flex: 1;
+  padding: 8px 4px;
+  margin-bottom: -1px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
   background: transparent;
   color: #9aa0a6;
   cursor: pointer;
-  font-size: 12px;
-  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: normal;
+  text-align: center;
 }
 
 .weather-tab:hover {
-  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
 }
 
 .weather-tab.active {
-  background: rgba(255, 255, 255, 0.14);
   color: #fff;
   font-weight: 600;
-  border-color: rgba(255, 255, 255, 0.24);
+  border-bottom-color: #3b82f6;
 }
 
 .forecast-list {
@@ -373,4 +381,133 @@
 .model-table th {
   color: #9aa0a6;
   font-weight: 600;
+}
+
+.locator-map {
+  position: relative;
+  border-radius: 6px;
+  overflow: hidden;
+  line-height: 0;
+}
+
+.locator-map img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.locator-pin {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -14px 0 0 -7px;
+  background: #22c55e;
+  border: 2px solid #0f1115;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+}
+
+.forecast-cards {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.forecast-card {
+  flex: 0 0 auto;
+  width: 84px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e6e6e6;
+  cursor: pointer;
+  text-align: center;
+}
+
+.forecast-card:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.forecast-card.active {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.forecast-card-name {
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.forecast-card-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 4px;
+}
+
+.forecast-card-precip {
+  font-size: 10px;
+  color: #60a5fa;
+}
+
+.forecast-card-temp {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.forecast-card-temp.high {
+  color: #f87171;
+}
+
+.forecast-card-temp.low {
+  color: #60a5fa;
+}
+
+.forecast-card-short {
+  font-size: 10px;
+  color: #9aa0a6;
+  line-height: 1.2;
+}
+
+.detailed-forecast-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.detailed-forecast-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 6px;
+  border-radius: 4px;
+}
+
+.detailed-forecast-list li:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.detailed-forecast-list li.highlighted {
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.detailed-forecast-name {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.detailed-forecast-text {
+  font-size: 12px;
+  color: #c3c8cd;
+  line-height: 1.4;
 }
