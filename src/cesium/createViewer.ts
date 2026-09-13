@@ -1,29 +1,11 @@
 import * as Cesium from 'cesium'
-import 'cesium/Build/Cesium/Widgets/widgets.css'
 
-const ionToken = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined
-
-if (!ionToken) {
-  document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-    <div style="font-family: sans-serif; padding: 2rem; max-width: 640px; margin: 0 auto;">
-      <h1>Missing Cesium ion access token</h1>
-      <p>Create a free token at <a href="https://ion.cesium.com/tokens" target="_blank">ion.cesium.com/tokens</a>,
-      then create a <code>.env</code> file in the project root with:</p>
-      <pre>VITE_CESIUM_ION_TOKEN=your_token_here</pre>
-      <p>Restart the dev server after adding it.</p>
-    </div>
-  `
-  throw new Error('Missing VITE_CESIUM_ION_TOKEN')
-}
-
-Cesium.Ion.defaultAccessToken = ionToken
-
-async function main() {
+export async function createViewer(container: HTMLDivElement): Promise<Cesium.Viewer> {
   const terrainProvider = await Cesium.createWorldTerrainAsync({
     requestVertexNormals: true,
   })
 
-  const viewer = new Cesium.Viewer('cesiumContainer', {
+  const viewer = new Cesium.Viewer(container, {
     terrainProvider,
     baseLayerPicker: true,
     timeline: false,
@@ -80,6 +62,6 @@ async function main() {
       pitch: Cesium.Math.toRadians(-30),
     },
   })
-}
 
-main()
+  return viewer
+}
