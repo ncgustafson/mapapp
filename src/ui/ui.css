@@ -178,3 +178,72 @@
 .delete:hover {
   color: #f87171;
 }
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.weather-controls {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.slider-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #9aa0a6;
+}
+
+.slider-row input[type='range'] {
+  width: 100%;
+}
+
+.slider-value {
+  color: #e6e6e6;
+  font-size: 13px;
+}
+
+.legend-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.legend-bar {
+  height: 10px;
+  border-radius: 4px;
+}
+
+.legend-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #9aa0a6;
+}
+
+.weather-controls button {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e6e6e6;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.weather-controls button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.weather-controls button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
