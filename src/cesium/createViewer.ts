@@ -54,13 +54,9 @@ export async function createViewer(container: HTMLDivElement): Promise<Cesium.Vi
     e.preventDefault()
   })
 
-  // Start over the Tetons as a proof-of-concept mountain landscape
+  // Default to an overview of Washington State
   viewer.camera.flyTo({
-    destination: Cesium.Cartesian3.fromDegrees(-110.8, 43.75, 15000),
-    orientation: {
-      heading: Cesium.Math.toRadians(0),
-      pitch: Cesium.Math.toRadians(-30),
-    },
+    destination: Cesium.Rectangle.fromDegrees(-124.85, 45.54, -116.92, 49.05),
   })
 
   return viewer
