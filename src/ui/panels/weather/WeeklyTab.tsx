@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import * as Cesium from 'cesium'
 import { useCesiumViewer } from '../../../cesium/CesiumContext'
-import { getMapCenter } from '../../../cesium/mapCenter'
 import { fetchWeeklyForecast, type WeeklyForecastResult } from '../../../weather/weeklyForecast'
 import { staticLocatorMapUrl } from '../../../weather/staticMap'
 
@@ -77,6 +76,37 @@ export function WeeklyTab() {
     }
   }
 
+  const loadForecastRef = useRef(loadForecast)
+  loadForecastRef.current = loadForecast
+
+  // While this tab is open, double-clicking the map gets the forecast for
+  // that spot instead of Cesium's default double-click (track entity).
+  useEffect(() => {
+    if (!viewer) return
+    const handler = viewer.screenSpaceEventHandler
+    const previousAction = handler.getInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
+
+    handler.setInputAction((movement: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
+      // pickPosition reads the actual rendered terrain surface (depth
+      // buffer), unlike pickEllipsoid which intersects the flat WGS84
+      // ellipsoid and drifts badly over elevated terrain at tilted angles.
+      const cartesian = viewer.scene.pickPositionSupported
+        ? viewer.scene.pickPosition(movement.position)
+        : viewer.camera.pickEllipsoid(movement.position, viewer.scene.globe.ellipsoid)
+      if (!cartesian) return
+      const carto = Cesium.Cartographic.fromCartesian(cartesian)
+      loadForecastRef.current(Cesium.Math.toDegrees(carto.latitude), Cesium.Math.toDegrees(carto.longitude), false)
+    }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
+
+    return () => {
+      if (previousAction) {
+        handler.setInputAction(previousAction, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
+      } else {
+        handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
+      }
+    }
+  }, [viewer])
+
   async function handleSearch(e: FormEvent) {
     e.preventDefault()
     if (!viewer || !query.trim()) return
@@ -98,13 +128,6 @@ export function WeeklyTab() {
     }
   }
 
-  async function useMapCenter() {
-    if (!viewer) return
-    const center = getMapCenter(viewer)
-    if (!center) return
-    await loadForecast(center.lat, center.lon, false)
-  }
-
   return (
     <div className="weather-controls">
       <form onSubmit={handleSearch} className="search-form">
@@ -117,9 +140,7 @@ export function WeeklyTab() {
           {searching ? 'Searching…' : 'Search'}
         </button>
       </form>
-      <button onClick={useMapCenter} disabled={!viewer || loading}>
-        Use map center instead
-      </button>
+      <p className="empty">Or double-click anywhere on the map to get its forecast.</p>
 
       {loading && <p className="empty">Loading forecast…</p>}
       {error && <p className="error">{error}</p>}
@@ -170,7 +191,7 @@ export function WeeklyTab() {
 
       {!result && !loading && (
         <p className="empty">
-          Search for a place above, or use the current map center, to see NOAA's 7-day forecast.
+          Search for a place above, or double-click the map, to see NOAA's 7-day forecast.
         </p>
       )}
     </div>
