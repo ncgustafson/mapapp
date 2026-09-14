@@ -122,7 +122,7 @@ export function GraphicalTab() {
       const rectangle = viewer.camera.computeViewRectangle(viewer.scene.globe.ellipsoid)
       if (!rectangle) throw new Error('no view rectangle')
 
-      const candidates = await fetchLandmarks(rectangle)
+      const candidates = await fetchLandmarks(viewer, rectangle)
       if (isStale()) return
 
       const landmarks = declutterByScreenSpace(viewer, [

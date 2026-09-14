@@ -6,6 +6,7 @@ const ALLOWED_HOSTS = new Set([
   'graphical.weather.gov',
   'overpass-api.de',
   'server.arcgisonline.com',
+  'carto.nationalmap.gov',
 ])
 
 export function isAllowedUrl(raw: string): boolean {
