@@ -1,3 +1,5 @@
+import { proxied } from '../lib/proxy'
+
 // A small non-interactive locator map, in the style NOAA's own forecast
 // pages use for their location thumbnail (also ESRI-tiled).
 export function staticLocatorMapUrl(
@@ -20,5 +22,5 @@ export function staticLocatorMapUrl(
     f: 'image',
   })
 
-  return `https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/export?${params.toString()}`
+  return proxied(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/export?${params.toString()}`)
 }

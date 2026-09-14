@@ -1,22 +1,37 @@
 import { useEffect, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import { useCesiumViewer } from '../../../cesium/CesiumContext'
+import { getMapCenter } from '../../../cesium/mapCenter'
+import { addTerrainBoundsBorder } from '../../../cesium/markers'
+import {
+  findStateSectorForPoint,
+  GRAPHICAL_ELEMENTS,
+  GRAPHICAL_REGIONS,
+  GRAPHICAL_SECTOR_BOUNDS,
+  GRAPHICAL_STATES,
+  graphicalImageUrl,
+  periodDateLabel,
+} from '../../../weather/graphicalForecast'
 import { declutterByScreenSpace, fetchLandmarks } from '../../../weather/landmarks'
 import {
-  buildTemperatureHeatmapProvider,
-  fetchTemperatureForLandmarks,
-  rgbStringForTempF,
-  TEMPERATURE_LEGEND_MARKS,
-  type TemperatureSample,
-} from '../../../weather/liveTemperature'
+  buildElementHeatmapProvider,
+  fetchElementSamples,
+  getElementConfig,
+  isElementSupported,
+  rgbStringForValue,
+  type ElementSample,
+} from '../../../weather/elementHeatmap'
 
-function buildLabelEntities(samples: TemperatureSample[]): Cesium.Entity[] {
+const ALL_SECTORS = [...GRAPHICAL_REGIONS, ...GRAPHICAL_STATES]
+
+function buildOverlayLabelEntities(samples: ElementSample[], elementCode: string): Cesium.Entity[] {
+  const config = getElementConfig(elementCode)
   return samples.map(
     (s) =>
       new Cesium.Entity({
         position: Cesium.Cartesian3.fromDegrees(s.lon, s.lat),
         label: {
-          text: `${s.name}\n${Math.round(s.tempF)}°`,
+          text: `${s.name}\n${config ? config.formatValue(s.value) : Math.round(s.value)}`,
           font: 'bold 13px system-ui, sans-serif',
           fillColor: Cesium.Color.WHITE,
           outlineColor: Cesium.Color.BLACK,
@@ -40,46 +55,69 @@ function buildLabelEntities(samples: TemperatureSample[]): Cesium.Entity[] {
 
 export function GraphicalTab() {
   const viewer = useCesiumViewer()
-  const layerRef = useRef<Cesium.ImageryLayer | null>(null)
-  const labelEntitiesRef = useRef<Cesium.Entity[]>([])
-  const opacityRef = useRef(0.6)
-  const requestIdRef = useRef(0)
+  const suppressNextMoveEndRef = useRef(false)
+  const sectorRef = useRef('washington')
 
-  const [enabled, setEnabled] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [samples, setSamples] = useState<TemperatureSample[]>([])
+  const overlayLayerRef = useRef<Cesium.ImageryLayer | null>(null)
+  const overlayLabelsRef = useRef<Cesium.Entity[]>([])
+  const overlayOpacityRef = useRef(0.65)
+  const overlayRequestIdRef = useRef(0)
 
-  useEffect(() => {
-    return () => {
-      removeLayer()
-      removeLabels()
-    }
-  }, [viewer])
+  const [sector, setSector] = useState('washington')
+  const [elementCode, setElementCode] = useState('MaxT')
+  const [period, setPeriod] = useState(1)
+  const [imageLoaded, setImageLoaded] = useState(false)
+  const [imageError, setImageError] = useState(false)
 
-  function removeLayer() {
-    if (viewer && layerRef.current) {
-      viewer.imageryLayers.remove(layerRef.current)
-      layerRef.current = null
+  const [overlayEnabled, setOverlayEnabled] = useState(false)
+  const [overlayLoading, setOverlayLoading] = useState(false)
+  const [overlayError, setOverlayError] = useState<string | null>(null)
+  const [overlaySamples, setOverlaySamples] = useState<ElementSample[]>([])
+
+  const element = GRAPHICAL_ELEMENTS.find((e) => e.code === elementCode) ?? GRAPHICAL_ELEMENTS[0]
+  const overlaySupported = isElementSupported(elementCode)
+  const overlayConfig = getElementConfig(elementCode)
+
+  function flyToSector(code: string) {
+    if (!viewer) return
+    const bounds = GRAPHICAL_SECTOR_BOUNDS[code]
+    if (!bounds) return
+    suppressNextMoveEndRef.current = true
+    viewer.camera.flyTo({
+      destination: Cesium.Rectangle.fromDegrees(...bounds),
+    })
+  }
+
+  function handleSectorChange(value: string) {
+    setSector(value)
+    setImageLoaded(false)
+    setImageError(false)
+    flyToSector(value)
+  }
+
+  function removeOverlayLayer() {
+    if (viewer && overlayLayerRef.current) {
+      viewer.imageryLayers.remove(overlayLayerRef.current)
+      overlayLayerRef.current = null
     }
   }
 
-  function removeLabels() {
+  function removeOverlayLabels() {
     if (viewer) {
-      for (const entity of labelEntitiesRef.current) {
+      for (const entity of overlayLabelsRef.current) {
         viewer.entities.remove(entity)
       }
     }
-    labelEntitiesRef.current = []
+    overlayLabelsRef.current = []
   }
 
-  async function refresh() {
-    if (!viewer) return
-    const requestId = ++requestIdRef.current
-    const isStale = () => requestIdRef.current !== requestId
+  async function refreshOverlay(forElementCode: string) {
+    if (!viewer || !isElementSupported(forElementCode)) return
+    const requestId = ++overlayRequestIdRef.current
+    const isStale = () => overlayRequestIdRef.current !== requestId
 
-    setLoading(true)
-    setError(null)
+    setOverlayLoading(true)
+    setOverlayError(null)
     try {
       const rectangle = viewer.camera.computeViewRectangle(viewer.scene.globe.ellipsoid)
       if (!rectangle) throw new Error('no view rectangle')
@@ -92,128 +130,266 @@ export function GraphicalTab() {
         { items: candidates.filter((l) => l.kind === 'peak'), maxCount: 8 },
       ])
       if (landmarks.length < 3) {
-        setError('Not enough named cities or peaks found in this view to build an overlay.')
-        removeLayer()
-        removeLabels()
-        setSamples([])
+        setOverlayError('Not enough named cities or peaks found in this view to build an overlay.')
+        removeOverlayLayer()
+        removeOverlayLabels()
+        setOverlaySamples([])
         return
       }
 
-      const found = await fetchTemperatureForLandmarks(landmarks)
+      const found = await fetchElementSamples(landmarks, forElementCode)
       if (isStale()) return
       if (found.length === 0) {
-        setError('No NWS data available here — coverage is the US and territories only.')
-        removeLayer()
-        removeLabels()
-        setSamples([])
+        setOverlayError('No NWS data available here — coverage is the US and territories only.')
+        removeOverlayLayer()
+        removeOverlayLabels()
+        setOverlaySamples([])
         return
       }
 
-      const provider = await buildTemperatureHeatmapProvider(rectangle, found)
-      if (isStale()) return
+      const provider = await buildElementHeatmapProvider(rectangle, found, forElementCode)
+      if (isStale() || !provider) return
 
-      removeLayer()
-      removeLabels()
+      removeOverlayLayer()
+      removeOverlayLabels()
       const layer = viewer.imageryLayers.addImageryProvider(provider)
-      layer.alpha = opacityRef.current
-      layerRef.current = layer
+      layer.alpha = overlayOpacityRef.current
+      overlayLayerRef.current = layer
 
-      const labels = buildLabelEntities(found)
+      const labels = buildOverlayLabelEntities(found, forElementCode)
       for (const entity of labels) viewer.entities.add(entity)
-      labelEntitiesRef.current = labels
+      overlayLabelsRef.current = labels
 
-      setSamples(found)
+      setOverlaySamples(found)
     } catch (e) {
       if (isStale()) return
-      setError(
+      setOverlayError(
         e instanceof Error && e.message.includes('too large')
-          ? 'Zoom in closer to sample landmark temperatures for this area.'
-          : 'Could not load live temperature data.',
+          ? 'Zoom in closer to sample landmark data for this area.'
+          : 'Could not load map overlay data.',
       )
     } finally {
-      if (!isStale()) setLoading(false)
+      if (!isStale()) setOverlayLoading(false)
     }
   }
 
-  function handleToggle(checked: boolean) {
-    setEnabled(checked)
+  function handleOverlayToggle(checked: boolean) {
+    setOverlayEnabled(checked)
     if (checked) {
-      refresh()
+      refreshOverlay(elementCode)
     } else {
-      removeLayer()
-      removeLabels()
-      setSamples([])
-      setError(null)
+      removeOverlayLayer()
+      removeOverlayLabels()
+      setOverlaySamples([])
+      setOverlayError(null)
     }
   }
 
-  function handleOpacityChange(value: number) {
-    opacityRef.current = value
-    if (layerRef.current) {
-      layerRef.current.alpha = value
+  function handleOverlayOpacityChange(value: number) {
+    overlayOpacityRef.current = value
+    if (overlayLayerRef.current) {
+      overlayLayerRef.current.alpha = value
     }
   }
 
-  const minTemp = samples.length ? Math.min(...samples.map((s) => s.tempF)) : null
-  const maxTemp = samples.length ? Math.max(...samples.map((s) => s.tempF)) : null
-  const cityCount = samples.filter((s) => s.kind === 'city').length
-  const peakCount = samples.filter((s) => s.kind === 'peak').length
+  useEffect(() => {
+    return () => {
+      removeOverlayLayer()
+      removeOverlayLabels()
+    }
+  }, [viewer])
+
+  function handleElementChange(value: string) {
+    setElementCode(value)
+    setPeriod(1)
+    setImageLoaded(false)
+    setImageError(false)
+    if (overlayEnabled) {
+      if (isElementSupported(value)) {
+        refreshOverlay(value)
+      } else {
+        removeOverlayLayer()
+        removeOverlayLabels()
+        setOverlaySamples([])
+        setOverlayError(null)
+      }
+    }
+  }
+
+  function handlePeriodChange(value: number) {
+    setPeriod(value)
+    setImageLoaded(false)
+    setImageError(false)
+  }
+
+  useEffect(() => {
+    sectorRef.current = sector
+  }, [sector])
+
+  // Keep the region selection in sync as the map is panned — but not right
+  // after we ourselves flew the camera to a region/state pick, since that
+  // would immediately snap a broader region (e.g. "Pacific Northwest") back
+  // down to whichever single state happens to be under its center. Also
+  // only touch state when the sector actually changes — resetting the image
+  // loading flags on every camera nudge left the (unchanged, same-src) img
+  // permanently stuck showing "Loading…" since onLoad never refires for a
+  // src that didn't change.
+  useEffect(() => {
+    if (!viewer) return
+    function onMoveEnd() {
+      if (suppressNextMoveEndRef.current) {
+        suppressNextMoveEndRef.current = false
+        return
+      }
+      const center = getMapCenter(viewer!)
+      if (!center) return
+      const found = findStateSectorForPoint(center.lat, center.lon)
+      if (!found || found === sectorRef.current) return
+      setSector(found)
+      setImageLoaded(false)
+      setImageError(false)
+    }
+    viewer.camera.moveEnd.addEventListener(onMoveEnd)
+    return () => {
+      viewer.camera.moveEnd.removeEventListener(onMoveEnd)
+    }
+  }, [viewer])
+
+  // Draw the selected region's bounding box on the map. Approximate
+  // rectangles, not true state borders.
+  useEffect(() => {
+    if (!viewer) return
+    const bounds = GRAPHICAL_SECTOR_BOUNDS[sector]
+    if (!bounds) return
+    const entity = addTerrainBoundsBorder(viewer, bounds)
+    return () => {
+      viewer.entities.remove(entity)
+    }
+  }, [viewer, sector])
+
+  const imageUrl = graphicalImageUrl(sector, element.code, period)
+  const sectorLabel = ALL_SECTORS.find((s) => s.code === sector)?.label ?? sector
 
   return (
     <div>
-      <label className="toggle-row">
-        <input
-          type="checkbox"
-          checked={enabled}
-          disabled={!viewer || loading}
-          onChange={(e) => handleToggle(e.target.checked)}
+      <div className="graphical-region-row">
+        <label>
+          Region
+          <select value={sector} onChange={(e) => handleSectorChange(e.target.value)}>
+            <optgroup label="Regions">
+              {GRAPHICAL_REGIONS.map((r) => (
+                <option key={r.code} value={r.code}>
+                  {r.label}
+                </option>
+              ))}
+            </optgroup>
+            <optgroup label="States">
+              {GRAPHICAL_STATES.map((s) => (
+                <option key={s.code} value={s.code}>
+                  {s.label}
+                </option>
+              ))}
+            </optgroup>
+          </select>
+        </label>
+      </div>
+
+      <div className="graphical-image-frame">
+        {!imageLoaded && !imageError && <p className="empty">Loading forecast image…</p>}
+        {imageError && <p className="error">Could not load this forecast image.</p>}
+        <img
+          key={imageUrl}
+          src={imageUrl}
+          alt={`${element.label} forecast for ${sectorLabel}`}
+          className="graphical-image"
+          style={{ display: imageLoaded ? 'block' : 'none' }}
+          onLoad={() => setImageLoaded(true)}
+          onError={() => setImageError(true)}
         />
-        Temperature (live NWS data)
-      </label>
+      </div>
 
-      {loading && <p className="empty">Finding landmarks and sampling conditions…</p>}
-      {error && <p className="error">{error}</p>}
-
-      {enabled && samples.length > 0 && (
-        <div className="weather-controls">
-          {minTemp !== null && maxTemp !== null && (
-            <p className="empty">
-              {cityCount} cities, {peakCount} peaks — {Math.round(minTemp)}°F – {Math.round(maxTemp)}°F
-            </p>
-          )}
-
-          <button onClick={refresh} disabled={loading}>
-            Refresh for this view
+      <h3>Element</h3>
+      <div className="element-tabs">
+        {GRAPHICAL_ELEMENTS.map((e) => (
+          <button
+            key={e.code}
+            className={`element-tab ${elementCode === e.code ? 'active' : ''}`}
+            onClick={() => handleElementChange(e.code)}
+          >
+            {e.label}
           </button>
+        ))}
+      </div>
 
-          <div className="slider-row">
-            <label htmlFor="temp-opacity">Opacity</label>
+      <div className="graphical-time-slider">
+        <input
+          type="range"
+          min={1}
+          max={element.maxPeriod}
+          value={period}
+          onChange={(e) => handlePeriodChange(Number(e.target.value))}
+        />
+        <span className="graphical-time-label">{periodDateLabel(element, period)}</span>
+      </div>
+
+      <h3>Map Overlay</h3>
+      {overlaySupported ? (
+        <>
+          <label className="toggle-row">
             <input
-              id="temp-opacity"
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              defaultValue={opacityRef.current}
-              onChange={(e) => handleOpacityChange(Number(e.target.value))}
+              type="checkbox"
+              checked={overlayEnabled}
+              disabled={!viewer || overlayLoading}
+              onChange={(e) => handleOverlayToggle(e.target.checked)}
             />
-          </div>
+            Show {element.label} on the map
+          </label>
 
-          <div className="legend-scale">
-            {TEMPERATURE_LEGEND_MARKS.map((mark) => (
-              <div key={mark} className="legend-swatch" style={{ background: rgbStringForTempF(mark) }}>
-                {mark}
+          {overlayLoading && <p className="empty">Sampling {element.label.toLowerCase()}…</p>}
+          {overlayError && <p className="error">{overlayError}</p>}
+
+          {overlayEnabled && overlaySamples.length > 0 && overlayConfig && (
+            <div className="weather-controls">
+              <button onClick={() => refreshOverlay(elementCode)} disabled={overlayLoading}>
+                Refresh for this view
+              </button>
+
+              <div className="slider-row">
+                <label htmlFor="overlay-opacity">Opacity</label>
+                <input
+                  id="overlay-opacity"
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  defaultValue={overlayOpacityRef.current}
+                  onChange={(e) => handleOverlayOpacityChange(Number(e.target.value))}
+                />
               </div>
-            ))}
-          </div>
-        </div>
+
+              <div className="legend-scale">
+                {overlayConfig.legendMarks.map((mark) => (
+                  <div
+                    key={mark}
+                    className="legend-swatch"
+                    style={{ background: rgbStringForValue(elementCode, mark) }}
+                  >
+                    {overlayConfig.formatValue(mark)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <p className="empty">Map overlay isn't available for {element.label.toLowerCase()}.</p>
       )}
 
       <p className="empty">
-        Samples named cities and peaks (via OpenStreetMap) in the current view, then pulls live
-        temperature from NOAA's gridpoint forecast API for each. Regional-scale views only — zoom
-        in if it can't find enough landmarks. Doesn't follow the camera automatically — use
-        Refresh after moving.
+        NOAA's own live Graphical Forecast image (graphical.weather.gov) above. The map overlay
+        below is our own approximate rendering (sampled cities/peaks + interpolation), not NOAA's
+        actual data/colors. The region follows the map as you pan it, and picking a region here
+        flies the map there.
       </p>
     </div>
   )

@@ -15,7 +15,10 @@ export async function createViewer(container: HTMLDivElement): Promise<Cesium.Vi
     infoBox: false,
   })
 
-  viewer.scene.globe.enableLighting = true
+  // Sun-based shading looks realistic but makes large parts of the terrain
+  // go dark depending on the time of day and slope orientation — left off
+  // for a consistently bright, readable map.
+  viewer.scene.globe.enableLighting = false
   viewer.scene.globe.depthTestAgainstTerrain = true
 
   // Replace the default Shift+drag "free look" (swivels camera in place,

@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import * as Cesium from 'cesium'
 import { useCesiumViewer } from '../../../cesium/CesiumContext'
+import { getMapCenter } from '../../../cesium/mapCenter'
+import { addTerrainSquareMarker } from '../../../cesium/markers'
+import { useDoubleClickPick } from '../../../cesium/useDoubleClickPick'
 import { fetchWeeklyForecast, type WeeklyForecastResult } from '../../../weather/weeklyForecast'
 import { staticLocatorMapUrl } from '../../../weather/staticMap'
 
@@ -12,10 +15,6 @@ function destinationToLatLon(destination: Cesium.Cartesian3 | Cesium.Rectangle):
   const carto = Cesium.Cartographic.fromCartesian(destination)
   return { lat: Cesium.Math.toDegrees(carto.latitude), lon: Cesium.Math.toDegrees(carto.longitude) }
 }
-
-// Half-width of the forecast-area square, in degrees — roughly matches how
-// prominent NOAA's own green square looks on their locator thumbnail.
-const FORECAST_SQUARE_HALF_DEG = 0.015
 
 export function WeeklyTab() {
   const viewer = useCesiumViewer()
@@ -41,17 +40,7 @@ export function WeeklyTab() {
     if (markerRef.current) {
       viewer.entities.remove(markerRef.current)
     }
-    const d = FORECAST_SQUARE_HALF_DEG
-    markerRef.current = viewer.entities.add({
-      rectangle: {
-        coordinates: Cesium.Rectangle.fromDegrees(lon - d, lat - d, lon + d, lat + d),
-        material: Cesium.Color.fromCssColorString('#22c55e').withAlpha(0.45),
-        outline: true,
-        outlineColor: Cesium.Color.fromCssColorString('#22c55e'),
-        outlineWidth: 2,
-        classificationType: Cesium.ClassificationType.TERRAIN,
-      },
-    })
+    markerRef.current = addTerrainSquareMarker(viewer, lat, lon)
   }
 
   async function loadForecast(lat: number, lon: number, flyTo: boolean) {
@@ -79,33 +68,18 @@ export function WeeklyTab() {
   const loadForecastRef = useRef(loadForecast)
   loadForecastRef.current = loadForecast
 
-  // While this tab is open, double-clicking the map gets the forecast for
-  // that spot instead of Cesium's default double-click (track entity).
+  // Default to whatever's at the map center when the tab first opens. Keyed
+  // only on `viewer` so this fires once the map is ready, not again as the
+  // map moves afterward.
   useEffect(() => {
     if (!viewer) return
-    const handler = viewer.screenSpaceEventHandler
-    const previousAction = handler.getInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
-
-    handler.setInputAction((movement: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
-      // pickPosition reads the actual rendered terrain surface (depth
-      // buffer), unlike pickEllipsoid which intersects the flat WGS84
-      // ellipsoid and drifts badly over elevated terrain at tilted angles.
-      const cartesian = viewer.scene.pickPositionSupported
-        ? viewer.scene.pickPosition(movement.position)
-        : viewer.camera.pickEllipsoid(movement.position, viewer.scene.globe.ellipsoid)
-      if (!cartesian) return
-      const carto = Cesium.Cartographic.fromCartesian(cartesian)
-      loadForecastRef.current(Cesium.Math.toDegrees(carto.latitude), Cesium.Math.toDegrees(carto.longitude), false)
-    }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
-
-    return () => {
-      if (previousAction) {
-        handler.setInputAction(previousAction, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
-      } else {
-        handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
-      }
-    }
+    const center = getMapCenter(viewer)
+    if (!center) return
+    loadForecastRef.current(center.lat, center.lon, false)
   }, [viewer])
+
+  // While this tab is open, double-clicking the map gets the forecast for that spot.
+  useDoubleClickPick(viewer, (lat, lon) => loadForecastRef.current(lat, lon, false))
 
   async function handleSearch(e: FormEvent) {
     e.preventDefault()

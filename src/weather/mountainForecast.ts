@@ -1,4 +1,5 @@
 import * as Cesium from 'cesium'
+import { proxied } from '../lib/proxy'
 
 export type ElevationBand = {
   label: string
@@ -25,13 +26,13 @@ export async function fetchMountainForecast(
   ])
   const summitElevationM = sampled.height ?? 0
 
-  const pointsRes = await fetch(`https://api.weather.gov/points/${lat.toFixed(4)},${lon.toFixed(4)}`)
+  const pointsRes = await fetch(proxied(`https://api.weather.gov/points/${lat.toFixed(4)},${lon.toFixed(4)}`))
   if (!pointsRes.ok) throw new Error('point lookup failed')
   const points = await pointsRes.json()
   const gridUrl: string | undefined = points?.properties?.forecastGridData
   if (!gridUrl) throw new Error('no gridpoint data for this location')
 
-  const gridRes = await fetch(gridUrl)
+  const gridRes = await fetch(proxied(gridUrl))
   if (!gridRes.ok) throw new Error('gridpoint fetch failed')
   const grid = await gridRes.json()
   const modelElevationM = grid?.properties?.elevation?.value

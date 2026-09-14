@@ -1,4 +1,5 @@
 import * as Cesium from 'cesium'
+import { proxied } from '../lib/proxy'
 
 export type Landmark = {
   name: string
@@ -33,7 +34,10 @@ export async function fetchLandmarks(
 
   const query = `[out:json][timeout:25];(node["place"~"^(city|town)$"]["population"](${south},${west},${north},${east});node["natural"="peak"]["name"](${south},${west},${north},${east}););out body;`
 
-  const res = await fetch(OVERPASS_URL, { method: 'POST', body: query })
+  // GET (rather than POST) so the request is a plain cacheable URL our proxy
+  // can key on.
+  const overpassUrl = `${OVERPASS_URL}?data=${encodeURIComponent(query)}`
+  const res = await fetch(proxied(overpassUrl))
   if (!res.ok) throw new Error(`Overpass request failed: ${res.status}`)
   const data = await res.json()
 
