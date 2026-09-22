@@ -7,7 +7,11 @@ export async function createViewer(container: HTMLDivElement): Promise<Cesium.Vi
 
   const viewer = new Cesium.Viewer(container, {
     terrainProvider,
-    baseLayerPicker: true,
+    // No default imagery — the Map tab's basemap switcher adds the initial
+    // base layer itself (see BasemapProvider), so Cesium's own ion-backed
+    // default layer is never requested at all.
+    baseLayer: false,
+    baseLayerPicker: false,
     timeline: false,
     animation: false,
     geocoder: true,

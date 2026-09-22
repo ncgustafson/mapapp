@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium'
 import { proxied } from '../lib/proxy'
+import usCitiesData from './data/us_cities.json'
 
 export type PlaceKind = 'city' | 'peak' | 'pass'
 
@@ -12,70 +13,110 @@ export type PlaceLandmark = {
   rank: number // population for cities, elevation in meters for peaks/passes
 }
 
-const OVERPASS_URL = 'https://overpass-api.de/api/interpreter'
+type UsCity = { name: string; lat: number; lon: number; population: number; state: string }
+const US_CITIES = usCitiesData as UsCity[]
 
-export async function fetchPlaceLandmarks(rectangle: Cesium.Rectangle): Promise<PlaceLandmark[]> {
+// USGS's National Map hosts GNIS (the official US database of named
+// geographic features) as a live, public, no-key ArcGIS REST service.
+// Originally this layer used Overpass (OpenStreetMap) instead, but its
+// public demo server started outright refusing connections under load —
+// GNIS is the same official, always-on source already proven reliable for
+// the weather Graphical tab's landmark sampling (src/weather/landmarks.ts).
+const GNIS_LANDFORMS_URL = 'https://carto.nationalmap.gov/arcgis/rest/services/geonames/MapServer/5/query'
+
+function citiesInRectangle(rectangle: Cesium.Rectangle, maxCities: number): PlaceLandmark[] {
   const south = Cesium.Math.toDegrees(rectangle.south)
   const west = Cesium.Math.toDegrees(rectangle.west)
   const north = Cesium.Math.toDegrees(rectangle.north)
   const east = Cesium.Math.toDegrees(rectangle.east)
-  const bbox = `${south},${west},${north},${east}`
 
-  // Peaks, passes, and populated places — all simple nodes, so a single
-  // `out body` query covers them cheaply. Lakes/glaciers are OSM areas
-  // (way/relation) needing `out center`, which proved too slow/unreliable
-  // on the public Overpass server for this always-on use case — left out
-  // for now.
-  const query = `[out:json][timeout:15];(node["place"~"^(city|town)$"]["population"](${bbox});node["natural"="peak"]["name"](${bbox});node["mountain_pass"]["name"](${bbox}););out body;`
+  return US_CITIES.filter((c) => c.lat >= south && c.lat <= north && c.lon >= west && c.lon <= east)
+    .sort((a, b) => b.population - a.population)
+    .slice(0, maxCities)
+    .map((c) => ({
+      id: `city/${c.name}/${c.lat.toFixed(3)}/${c.lon.toFixed(3)}`,
+      name: c.name,
+      lat: c.lat,
+      lon: c.lon,
+      kind: 'city' as const,
+      rank: c.population,
+    }))
+}
 
-  const overpassUrl = `${OVERPASS_URL}?data=${encodeURIComponent(query)}`
-  // A slow/hanging Overpass response shouldn't be able to stall this
-  // always-on layer indefinitely — fail fast and just keep showing
-  // whatever's already cached.
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 14000)
-  let res: Response
-  try {
-    res = await fetch(proxied(overpassUrl), { signal: controller.signal })
-  } finally {
-    clearTimeout(timeout)
-  }
-  if (!res.ok) throw new Error(`Overpass request failed: ${res.status}`)
+async function fetchGnisFeatures(
+  rectangle: Cesium.Rectangle,
+  featureClass: 'Summit' | 'Gap',
+): Promise<{ name: string; lat: number; lon: number }[]> {
+  const south = Cesium.Math.toDegrees(rectangle.south)
+  const west = Cesium.Math.toDegrees(rectangle.west)
+  const north = Cesium.Math.toDegrees(rectangle.north)
+  const east = Cesium.Math.toDegrees(rectangle.east)
+
+  const params = new URLSearchParams({
+    where: `gaz_featureclass='${featureClass}'`,
+    geometry: `${west},${south},${east},${north}`,
+    geometryType: 'esriGeometryEnvelope',
+    inSR: '4326',
+    outSR: '4326',
+    spatialRel: 'esriSpatialRelIntersects',
+    outFields: 'gaz_name',
+    f: 'json',
+    resultRecordCount: '500',
+  })
+
+  const res = await fetch(proxied(`${GNIS_LANDFORMS_URL}?${params.toString()}`))
+  if (!res.ok) throw new Error(`GNIS request failed: ${res.status}`)
   const data = await res.json()
 
-  const landmarks: PlaceLandmark[] = []
-  for (const el of data.elements ?? []) {
-    const tags = el.tags ?? {}
-    if (!tags.name || typeof el.lat !== 'number' || typeof el.lon !== 'number') continue
-    const id = `${el.type}/${el.id}`
-
-    if (tags.place === 'city' || tags.place === 'town') {
-      const population = Number(tags.population)
-      if (!Number.isFinite(population)) continue
-      landmarks.push({ id, name: tags.name, lat: el.lat, lon: el.lon, kind: 'city', rank: population })
-    } else if (tags.natural === 'peak') {
-      const elevation = Number(tags.ele)
-      landmarks.push({
-        id,
-        name: tags.name,
-        lat: el.lat,
-        lon: el.lon,
-        kind: 'peak',
-        rank: Number.isFinite(elevation) ? elevation : 0,
-      })
-    } else if (tags.mountain_pass) {
-      const elevation = Number(tags.ele)
-      landmarks.push({
-        id,
-        name: tags.name,
-        lat: el.lat,
-        lon: el.lon,
-        kind: 'pass',
-        rank: Number.isFinite(elevation) ? elevation : 0,
-      })
-    }
+  const seen = new Set<string>()
+  const found: { name: string; lat: number; lon: number }[] = []
+  for (const feature of data.features ?? []) {
+    const name = feature.attributes?.gaz_name
+    const points = feature.geometry?.points
+    if (!name || !Array.isArray(points) || points.length === 0) continue
+    const [lon, lat] = points[0]
+    if (typeof lat !== 'number' || typeof lon !== 'number') continue
+    const key = `${name}/${lat.toFixed(3)}/${lon.toFixed(3)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    found.push({ name, lat, lon })
   }
-  return landmarks
+  return found
+}
+
+/** GNIS doesn't include elevation — sample our own already-loaded terrain
+ * instead of depending on another source, same approach the weather
+ * Graphical tab's landmark sampling uses. */
+async function rankByTerrainElevation(
+  viewer: Cesium.Viewer,
+  kind: 'peak' | 'pass',
+  items: { name: string; lat: number; lon: number }[],
+): Promise<PlaceLandmark[]> {
+  if (items.length === 0) return []
+  const cartographics = items.map((s) => Cesium.Cartographic.fromDegrees(s.lon, s.lat))
+  const sampled = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, cartographics)
+  return items.map((s, i) => ({
+    id: `${kind}/${s.name}/${s.lat.toFixed(3)}/${s.lon.toFixed(3)}`,
+    name: s.name,
+    lat: s.lat,
+    lon: s.lon,
+    kind,
+    rank: sampled[i]?.height ?? 0,
+  }))
+}
+
+export async function fetchPlaceLandmarks(viewer: Cesium.Viewer, rectangle: Cesium.Rectangle): Promise<PlaceLandmark[]> {
+  const cities = citiesInRectangle(rectangle, 60)
+  const [summits, gaps] = await Promise.all([
+    fetchGnisFeatures(rectangle, 'Summit'),
+    fetchGnisFeatures(rectangle, 'Gap'),
+  ])
+  const [peaks, passes] = await Promise.all([
+    rankByTerrainElevation(viewer, 'peak', summits),
+    rankByTerrainElevation(viewer, 'pass', gaps),
+  ])
+
+  return [...cities, ...peaks, ...passes]
 }
 
 export function rectangleContains(outer: Cesium.Rectangle, inner: Cesium.Rectangle): boolean {

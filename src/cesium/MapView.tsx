@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type * as Cesium from 'cesium'
+import * as Cesium from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { createViewer } from './createViewer'
 import { CesiumContext } from './CesiumContext'
@@ -21,6 +21,10 @@ export function MapView({ children }: { children?: React.ReactNode }) {
       }
       viewerInstance = v
       setViewer(v)
+      if (import.meta.env.DEV) {
+        ;(window as unknown as { __viewer: Cesium.Viewer; __Cesium: typeof Cesium }).__viewer = v
+        ;(window as unknown as { __viewer: Cesium.Viewer; __Cesium: typeof Cesium }).__Cesium = Cesium
+      }
     })
 
     return () => {
