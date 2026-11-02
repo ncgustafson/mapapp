@@ -1220,3 +1220,151 @@
   font-size: 12px;
   color: #9aa0a6;
 }
+
+.climbing-intro {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #9aa0a6;
+  margin: 4px 0 12px;
+}
+
+.climbing-intro a {
+  color: #c084fc;
+}
+
+.climbing-filter {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.climbing-wall-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.climb-wall-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #c084fc;
+  margin: 14px 0 4px;
+}
+
+.climb-wall-header:first-child {
+  margin-top: 0;
+}
+
+.climb-topo-badge {
+  margin-left: 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #14161a;
+  background: #fde047;
+  border-radius: 4px;
+  padding: 1px 5px;
+  vertical-align: middle;
+}
+
+.route-item-selected {
+  background: rgba(192, 132, 252, 0.12);
+  border-color: rgba(192, 132, 252, 0.4);
+}
+
+
+.climbing-popup-wall {
+  font-size: 11px;
+  color: #c084fc;
+  margin-top: 4px;
+}
+
+.climbing-popup-fa {
+  font-size: 11px;
+  color: #9aa0a6;
+  margin-top: 2px;
+}
+
+.topo-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.topo-card {
+  background: rgba(20, 22, 26, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 14px;
+  max-width: 780px;
+  width: 100%;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  color: #e6e6e6;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.topo-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.topo-close {
+  background: transparent;
+  border: none;
+  color: #9aa0a6;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.topo-close:hover {
+  color: #f87171;
+}
+
+.topo-image-wrap {
+  position: relative;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.topo-image-wrap img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.topo-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.topo-note {
+  font-size: 12px;
+  color: #fde047;
+  margin: 10px 0 0;
+}
+
+.topo-credit {
+  font-size: 11px;
+  color: #6b7076;
+  margin: 4px 0 0;
+}

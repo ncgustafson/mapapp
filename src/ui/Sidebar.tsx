@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
+import { ClimbingPanel } from '../climbing/ClimbingPanel'
 import { PlacesPanel } from './panels/PlacesPanel'
 import { WeatherPanel } from './panels/WeatherPanel'
 import { RoutePanel } from './panels/RoutePanel'
 
-type PanelKey = 'places' | 'weather' | 'routes'
+type PanelKey = 'places' | 'weather' | 'routes' | 'climbing'
 
 const PANELS: { key: PanelKey; label: string }[] = [
   { key: 'places', label: 'Places' },
   { key: 'weather', label: 'Weather' },
   { key: 'routes', label: 'Routes' },
+  { key: 'climbing', label: 'Climbing' },
 ]
 
 const MIN_WIDTH = 260
@@ -84,6 +86,7 @@ export function Sidebar() {
           {active === 'places' && <PlacesPanel />}
           {active === 'weather' && <WeatherPanel />}
           {active === 'routes' && <RoutePanel />}
+          {active === 'climbing' && <ClimbingPanel />}
           <div className="resize-handle" onPointerDown={startResize} />
         </div>
       )}

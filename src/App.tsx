@@ -1,6 +1,9 @@
 import { BasemapProvider } from './basemaps/BasemapContext'
 import { MapView } from './cesium/MapView'
 import { SceneModeToggle } from './cesium/SceneModeToggle'
+import { ClimbingLayer } from './climbing/ClimbingLayer'
+import { ClimbingPopup } from './climbing/ClimbingPopup'
+import { ClimbingProvider } from './climbing/ClimbingContext'
 import { DrawingLayer } from './routes/DrawingLayer'
 import { RouteProvider } from './routes/RouteContext'
 import { RoutePopup } from './routes/RoutePopup'
@@ -16,13 +19,17 @@ export function App() {
     <div className="app-root">
       <MapView>
         <BasemapProvider>
-          <RouteProvider>
-            <DrawingLayer />
-            <RoutePopup />
-            <Sidebar />
-            <MapLayersPanel />
-            <SceneModeToggle />
-          </RouteProvider>
+          <ClimbingProvider>
+            <RouteProvider>
+              <DrawingLayer />
+              <RoutePopup />
+              <ClimbingLayer />
+              <ClimbingPopup />
+              <Sidebar />
+              <MapLayersPanel />
+              <SceneModeToggle />
+            </RouteProvider>
+          </ClimbingProvider>
         </BasemapProvider>
       </MapView>
     </div>

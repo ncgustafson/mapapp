@@ -1,29 +1,33 @@
-import Anthropic from '@anthropic-ai/sdk'
-import { betaZodTool } from '@anthropic-ai/sdk/helpers/beta/zod'
+import OpenAI from 'openai'
 import * as Cesium from 'cesium'
 import { z } from 'zod'
 import { findLandmarks, findPaths, findPointsOfInterest } from './mapContext'
 import type { LatLon, RouteKind } from './routeTypes'
 
-const API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY as string | undefined
+// Runs fully local via Ollama (https://ollama.com) — no API key, no rate
+// limit, nothing leaves the machine. Hosted open-weight providers (Groq,
+// OpenRouter, etc.) were tried first, but even their free tiers cap token
+// throughput too low for this agent's multi-turn tool-calling loop
+// (confirmed: every model on a free Groq account shared one flat 8,000
+// tokens/min cap, which a single route-planning turn can exceed on its
+// own). `ollama pull llama3.1:8b` once, then `ollama serve` (or `brew
+// services start ollama`) before using "Ask AI".
+const BASE_URL = (import.meta.env.VITE_OLLAMA_BASE_URL as string | undefined) || 'http://localhost:11434/v1'
+const MODEL = (import.meta.env.VITE_OLLAMA_MODEL as string | undefined) || 'llama3.1:8b'
 // Hard ceiling on the whole request — without this, a run of retries (the
-// SDK already retries 429/5xx automatically) could leave a single "Build"
-// click hanging with no way to tell it apart from an actual freeze.
-const OVERALL_TIMEOUT_MS = 90000
-// The Tool Runner's automatic loop has no built-in turn cap — with 5 tools
-// now available (up from 2), an ambiguous request ("a route through the
-// Wonderland Trail", a ~93mi loop split into ~10 separate segments in the
-// data) can otherwise send it wandering across many tool calls until it
-// hits the timeout above with nothing to show for it. This fails fast and
-// clearly well before that.
+// SDK already retries 5xx automatically) could leave a single "Build" click
+// hanging with no way to tell it apart from an actual freeze. Local
+// inference is slower than a hosted API (especially without a GPU, and
+// across up to MAX_TURNS model calls), so this is generous compared to what
+// a hosted-API version of this agent used.
+const OVERALL_TIMEOUT_MS = 180000
+// The hand-rolled loop below has no built-in turn cap otherwise — with 5
+// tools available, an ambiguous request ("a route through the Wonderland
+// Trail", a ~93mi loop split into ~10 separate segments in the data) can
+// otherwise send it wandering across many tool calls until it hits the
+// timeout above with nothing to show for it. This fails fast and clearly
+// well before that.
 const MAX_TURNS = 10
-
-// SECURITY NOTE: this calls the Anthropic API directly from the browser
-// with a key embedded in the shipped bundle. Anyone visiting this app's
-// public deployment could extract and use that key. Accepted as a known
-// trade-off for this project — do not copy this pattern into anything
-// handling a key you can't afford to have abused. The proper fix is a
-// small server-side proxy that holds the key instead.
 
 const SYSTEM_PROMPT = `You are a route-planning assistant inside a 3D backcountry mapping app, in the spirit of CalTopo. The user describes a route/point/area in plain language; you plan real waypoints for it, grounded in real map data — never invent trail names, road names, peak names, or coordinates.
 
@@ -59,32 +63,72 @@ const BoundsSchema = z.object({
 export type AgentRouteProposal = { name: string; kind: RouteKind; points: LatLon[] }
 
 export function agentAvailable(): boolean {
-  return Boolean(API_KEY)
+  // Paused: no AI provider is currently set up (Groq's free tier was too
+  // rate-limited for this agent's multi-turn tool loop; local Ollama was
+  // too heavy on this machine's CPU). Hidden rather than left visibly
+  // broken until a provider is picked back up — see planRouteWithAgent
+  // below, which still has the Ollama wiring if that's revisited.
+  return false
+}
+
+type ToolDef<Input> = {
+  name: string
+  description: string
+  parameters: Record<string, unknown>
+  schema: z.ZodType<Input>
+  run: (input: Input) => Promise<string>
+}
+
+// One zod schema doubles as both runtime validation and (via zod 4's
+// built-in JSON Schema conversion) the tool spec Ollama's OpenAI-compatible
+// function-calling API expects.
+function defineTool<Input>(opts: {
+  name: string
+  description: string
+  inputSchema: z.ZodType<Input>
+  run: (input: Input) => Promise<string>
+}): ToolDef<Input> {
+  const { $schema: _drop, ...parameters } = z.toJSONSchema(opts.inputSchema) as Record<string, unknown>
+  return { name: opts.name, description: opts.description, parameters, schema: opts.inputSchema, run: opts.run }
+}
+
+async function callTool(tool: ToolDef<unknown>, rawArgs: string | undefined): Promise<string> {
+  let json: unknown
+  try {
+    json = rawArgs ? JSON.parse(rawArgs) : {}
+  } catch {
+    return 'Invalid JSON arguments — re-check the tool call syntax.'
+  }
+  const parsed = tool.schema.safeParse(json)
+  if (!parsed.success) {
+    return `Invalid arguments: ${parsed.error.message}`
+  }
+  try {
+    return await tool.run(parsed.data)
+  } catch (err) {
+    return `Tool error: ${err instanceof Error ? err.message : String(err)}`
+  }
 }
 
 /**
- * Asks Claude to plan a route from a natural-language description, grounded
- * in the live map: it can look up the current camera view and sample real
- * terrain elevation before committing to waypoints, rather than guessing
- * coordinates from nothing. Uses the SDK's beta Tool Runner (automatic
- * agentic loop) instead of a hand-rolled one.
+ * Asks a local open-weight model (via Ollama) to plan a route from a
+ * natural-language description, grounded in the live map: it can look up
+ * the current camera view and sample real terrain elevation before
+ * committing to waypoints, rather than guessing coordinates from nothing.
+ * Hand-rolls the tool-calling loop against Ollama's OpenAI-compatible chat
+ * completions API (unlike Anthropic, it has no built-in agentic runner).
  */
 export async function planRouteWithAgent(
   viewer: Cesium.Viewer,
   userPrompt: string,
   onProgress?: (status: string) => void,
 ): Promise<AgentRouteProposal> {
-  if (!API_KEY) {
-    throw new Error('No VITE_ANTHROPIC_API_KEY configured — see .env')
-  }
-
-  // maxRetries covers transient 429/5xx (the SDK backs off and retries
-  // automatically) — raised a bit above the default 2 as extra headroom,
-  // paired with the overall timeout below as a hard backstop.
-  const client = new Anthropic({ apiKey: API_KEY, dangerouslyAllowBrowser: true, maxRetries: 4 })
+  // apiKey is required by the SDK's constructor but ignored by Ollama —
+  // any non-empty string works, there's no real credential here.
+  const client = new OpenAI({ baseURL: BASE_URL, apiKey: 'ollama', dangerouslyAllowBrowser: true, maxRetries: 4 })
   let proposal: AgentRouteProposal | null = null
 
-  const getMapView = betaZodTool({
+  const getMapView = defineTool({
     name: 'get_map_view',
     description: "Get the current 3D map camera's center point and visible bounds (lat/lon).",
     inputSchema: z.object({}),
@@ -107,7 +151,7 @@ export async function planRouteWithAgent(
     },
   })
 
-  const sampleElevation = betaZodTool({
+  const sampleElevation = defineTool({
     name: 'sample_elevation',
     description: 'Get real terrain elevation in meters at up to 50 lat/lon points.',
     inputSchema: z.object({ points: z.array(LatLonSchema).min(1).max(50) }),
@@ -119,19 +163,22 @@ export async function planRouteWithAgent(
     },
   })
 
-  const findPathsTool = betaZodTool({
+  const findPathsTool = defineTool({
     name: 'find_paths',
     description:
       'Find real named trail and road segments (each tagged "trail" or "road", with real geometry) within a bounds box — check this before drawing any route freehand. Pass name to get every segment of one specific trail/road (recommended whenever the user names one) instead of everything in the area.',
-    inputSchema: z.object({ bounds: BoundsSchema, name: z.string().optional() }),
+    // nullish, not just optional — some local models emit an explicit
+    // `null` for an omitted optional argument rather than leaving it out,
+    // which a plain `.optional()` schema rejects.
+    inputSchema: z.object({ bounds: BoundsSchema, name: z.string().nullish() }),
     run: async (input) => {
       onProgress?.(input.name ? `Searching for "${input.name}"…` : 'Searching for trails/roads in the area…')
-      const paths = await findPaths(input.bounds, input.name)
+      const paths = await findPaths(input.bounds, input.name ?? undefined)
       return JSON.stringify(paths)
     },
   })
 
-  const findLandmarksTool = betaZodTool({
+  const findLandmarksTool = defineTool({
     name: 'find_landmarks',
     description: 'Find named peaks, mountain passes, and cities/towns within a bounds box.',
     inputSchema: z.object({ bounds: BoundsSchema }),
@@ -142,7 +189,7 @@ export async function planRouteWithAgent(
     },
   })
 
-  const findPoisTool = betaZodTool({
+  const findPoisTool = defineTool({
     name: 'find_points_of_interest',
     description:
       'Find named outdoor points of interest (campsites, water sources, shelters, viewpoints, trailhead parking, etc.) within a bounds box.',
@@ -154,7 +201,7 @@ export async function planRouteWithAgent(
     },
   })
 
-  const proposeRoute = betaZodTool({
+  const proposeRoute = defineTool({
     name: 'propose_route',
     description: 'Finalize the planned route/point/area. Call this exactly once, as your last action.',
     inputSchema: z.object({
@@ -169,31 +216,61 @@ export async function planRouteWithAgent(
     },
   })
 
-  const runPromise = (async () => {
-    const runner = client.beta.messages.toolRunner({
-      model: 'claude-sonnet-5',
-      max_tokens: 16000,
-      thinking: { type: 'adaptive' },
-      system: SYSTEM_PROMPT,
-      tools: [getMapView, sampleElevation, findPathsTool, findLandmarksTool, findPoisTool, proposeRoute],
-      messages: [{ role: 'user', content: userPrompt }],
-    })
+  const tools = [getMapView, sampleElevation, findPathsTool, findLandmarksTool, findPoisTool, proposeRoute]
+  const toolsByName = new Map(tools.map((t) => [t.name, t as ToolDef<unknown>]))
+  const toolSpecs: OpenAI.Chat.Completions.ChatCompletionTool[] = tools.map((t) => ({
+    type: 'function',
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }))
 
-    let step = 0
-    for await (const message of runner) {
-      step++
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: userPrompt },
+  ]
+
+  const runPromise = (async () => {
+    for (let step = 1; step <= MAX_TURNS && !proposal; step++) {
       onProgress?.(`Thinking… (step ${step})`)
-      if (message.stop_reason === 'pause_turn') {
-        runner.pushMessages({ role: 'assistant', content: message.content })
+      let completion: OpenAI.Chat.Completions.ChatCompletion
+      try {
+        completion = await client.chat.completions.create({
+          model: MODEL,
+          max_tokens: 4096,
+          messages,
+          tools: toolSpecs,
+          tool_choice: 'auto',
+        })
+      } catch (err) {
+        if (err instanceof OpenAI.APIConnectionError) {
+          throw new Error(
+            `Can't reach Ollama at ${BASE_URL} — make sure it's running (\`ollama serve\`) and that "${MODEL}" is pulled (\`ollama pull ${MODEL}\`).`,
+          )
+        }
+        throw err
       }
-      if (proposal || step >= MAX_TURNS) break
+      const message = completion.choices[0]?.message
+      if (!message) break
+      messages.push(message)
+
+      if (!message.tool_calls || message.tool_calls.length === 0) break
+
+      for (const call of message.tool_calls) {
+        // All tools declared above are `type: "function"` — the custom-tool
+        // branch of this union never applies here, just narrowing for TS.
+        if (call.type !== 'function') continue
+        const tool = toolsByName.get(call.function.name)
+        const resultText = tool
+          ? await callTool(tool, call.function.arguments)
+          : `Unknown tool: ${call.function.name}`
+        messages.push({ role: 'tool', tool_call_id: call.id, content: resultText })
+      }
     }
   })()
 
   let timeoutId: ReturnType<typeof setTimeout>
   const timeout = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(
-      () => reject(new Error("Claude isn't responding — wait a moment and try again.")),
+      () => reject(new Error("The route-planning agent isn't responding — wait a moment and try again.")),
       OVERALL_TIMEOUT_MS,
     )
   })

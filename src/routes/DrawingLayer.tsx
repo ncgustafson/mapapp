@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import * as Cesium from 'cesium'
+import { useClimbing } from '../climbing/ClimbingContext'
 import { useCesiumViewer } from '../cesium/CesiumContext'
 import { padRectangle } from '../places/placeLandmarks'
 import { useRoutes } from './RouteContext'
@@ -101,12 +102,59 @@ function buildSavedEntities(viewer: Cesium.Viewer, feature: RouteFeature): Cesiu
   ]
 }
 
-function pickedRouteId(viewer: Cesium.Viewer, position: Cesium.Cartesian2): string | null {
-  const picked = viewer.scene.pick(position)
-  const entity = picked?.id as Cesium.Entity | undefined
-  if (!entity?.properties?.hasProperty('routeId')) return null
+// Measured directly (see debug session): a cluster bubble's actual pickable
+// region is only ~a few dozen pixels around its small dot — but its count +
+// wall-name label (see ClimbingLayer) floats well above that dot, which is
+// the part people naturally aim for. A plain scene.pick() at the exact
+// click pixel misses it almost every time. This retries in a small
+// expanding ring around the click before giving up, same idea as the
+// generous hit-slop every real map/UI click target gets.
+function pickNearby(viewer: Cesium.Viewer, position: Cesium.Cartesian2): ReturnType<Cesium.Scene['pick']> {
+  const exact = viewer.scene.pick(position)
+  if (exact) return exact
+  const maxRadius = 24
+  const step = 6
+  for (let r = step; r <= maxRadius; r += step) {
+    const ringSteps = Math.max(8, Math.round((2 * Math.PI * r) / step))
+    for (let i = 0; i < ringSteps; i++) {
+      const angle = (i / ringSteps) * 2 * Math.PI
+      const candidate = new Cesium.Cartesian2(position.x + r * Math.cos(angle), position.y + r * Math.sin(angle))
+      const picked = viewer.scene.pick(candidate)
+      if (picked) return picked
+    }
+  }
+  return undefined
+}
+
+function entityPropertyValue(entity: Cesium.Entity, key: string): string | null {
+  if (!entity?.properties?.hasProperty(key)) return null
   const value = entity.properties.getValue(Cesium.JulianDate.now())
-  return typeof value?.routeId === 'string' ? value.routeId : null
+  return typeof value?.[key] === 'string' ? value[key] : null
+}
+
+// A clustered marker (see ClimbingLayer's CustomDataSource clustering)
+// picks differently from a normal entity — Cesium sets `picked.id` to an
+// *array* of the Entities it collapsed, not a single Entity.
+function clusterPositions(ids: unknown): Cesium.Cartesian3[] | null {
+  if (!Array.isArray(ids)) return null
+  const positions = ids
+    .map((e: unknown) => (e as Cesium.Entity)?.position?.getValue(Cesium.JulianDate.now()))
+    .filter((p: Cesium.Cartesian3 | undefined): p is Cesium.Cartesian3 => p instanceof Cesium.Cartesian3)
+  return positions.length > 0 ? positions : null
+}
+
+// Zooms in on a clicked cluster bubble so it breaks apart into smaller
+// clusters or individual pins, rather than just reporting what's in it.
+function flyToCluster(viewer: Cesium.Viewer, positions: Cesium.Cartesian3[]): void {
+  const sphere = Cesium.BoundingSphere.fromPoints(positions)
+  // The real spread between same-wall markers is only a few meters (see
+  // ClimbingLayer's jitter) — flying to that literal radius wouldn't move
+  // the camera close enough to gain the on-screen separation needed to
+  // cross the clustering pixelRange threshold, so this floors it.
+  sphere.radius = Math.max(sphere.radius, 30)
+  viewer.camera.flyToBoundingSphere(sphere, {
+    offset: new Cesium.HeadingPitchRange(viewer.camera.heading, Cesium.Math.toRadians(-45), Math.max(sphere.radius * 5, 250)),
+  })
 }
 
 /**
@@ -119,6 +167,7 @@ function pickedRouteId(viewer: Cesium.Viewer, position: Cesium.Cartesian2): stri
 export function DrawingLayer() {
   const viewer = useCesiumViewer()
   const { routes, drawMode, draftPoints, addDraftPoint, finishDrawing, cancelDrawing, selectRoute } = useRoutes()
+  const { selectClimb } = useClimbing()
 
   const savedEntitiesRef = useRef<Map<string, Cesium.Entity[]>>(new Map())
   const draftPointsRef = useRef<LatLon[]>(draftPoints)
@@ -145,11 +194,11 @@ export function DrawingLayer() {
   // Click handling is wired up once and reads these refs each time, rather
   // than depending on (and re-subscribing for) every function/state change —
   // addDraftPoint etc. are fresh closures every render.
-  const callbacksRef = useRef({ addDraftPoint, cancelDrawing, finishDrawing, selectRoute })
+  const callbacksRef = useRef({ addDraftPoint, cancelDrawing, finishDrawing, selectRoute, selectClimb })
 
   draftPointsRef.current = draftPoints
   drawModeRef.current = drawMode
-  callbacksRef.current = { addDraftPoint, cancelDrawing, finishDrawing, selectRoute }
+  callbacksRef.current = { addDraftPoint, cancelDrawing, finishDrawing, selectRoute, selectClimb }
 
   // Recomputes the committed (clicked-so-far) traced path using whatever
   // graph is currently cached — called both when draftPoints changes and
@@ -318,7 +367,17 @@ export function DrawingLayer() {
         if (point) callbacksRef.current.addDraftPoint(point)
         return
       }
-      callbacksRef.current.selectRoute(pickedRouteId(viewer!, movement.position))
+      const picked = pickNearby(viewer!, movement.position)
+      const positions = clusterPositions(picked?.id)
+      if (positions) {
+        callbacksRef.current.selectRoute(null)
+        callbacksRef.current.selectClimb(null)
+        flyToCluster(viewer!, positions)
+        return
+      }
+      const entity = picked?.id instanceof Cesium.Entity ? picked.id : undefined
+      callbacksRef.current.selectRoute(entity ? entityPropertyValue(entity, 'routeId') : null)
+      callbacksRef.current.selectClimb(entity ? entityPropertyValue(entity, 'climbId') : null)
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
 
     handler.setInputAction((movement: Cesium.ScreenSpaceEventHandler.MotionEvent) => {
@@ -343,6 +402,7 @@ export function DrawingLayer() {
       if (e.key === 'Escape') {
         callbacksRef.current.cancelDrawing()
         callbacksRef.current.selectRoute(null)
+        callbacksRef.current.selectClimb(null)
       } else if (e.key === 'Enter') {
         callbacksRef.current.finishDrawing()
       }
